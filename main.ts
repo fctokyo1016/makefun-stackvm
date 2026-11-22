@@ -1,9 +1,7 @@
-// A tiny stack VM for make.fun's tiny stack ISA (version 1), following the reference
-// semantics exactly, including every trap code and limit in the ISA's check order.
+// Tiny stack VM for make.fun's tiny stack ISA v1: reference-exact semantics, every trap code and limit.
 import { mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-
-// [opcode, immediate bytes, pops, pushes]; a byte not listed is an unknown opcode (trap 5).
+// [opcode, immediate bytes, pops, pushes]; an unlisted byte is an unknown opcode (trap 5).
 const SPEC: [number, number, number, number][] = [
   [0, 0, 0, 0], [1, 1, 0, 1], [2, 4, 0, 1], [3, 0, 1, 0], [4, 0, 1, 2], [5, 0, 2, 2],
   [6, 0, 2, 3], [7, 0, 3, 3], [16, 0, 2, 1], [17, 0, 2, 1], [18, 0, 2, 1], [19, 0, 2, 1],
@@ -13,149 +11,66 @@ const SPEC: [number, number, number, number][] = [
   [52, 0, 0, 0], [64, 0, 1, 1], [65, 0, 2, 0], [80, 0, 1, 0], [81, 0, 1, 0], [82, 0, 0, 1],
   [83, 0, 1, 0],
 ];
-const IMM = new Int8Array(256).fill(-1);
-const POPS = new Int8Array(256);
-const PUSHES = new Int8Array(256);
-for (const [o, i, p, u] of SPEC) {
-  IMM[o] = i;
-  POPS[o] = p;
-  PUSHES[o] = u;
-}
-
+const IMM = new Int8Array(256).fill(-1), POPS = new Int8Array(256), PUSHES = new Int8Array(256);
+for (const [o, i, p, u] of SPEC) { IMM[o] = i; POPS[o] = p; PUSHES[o] = u; }
 function run(p: Uint8Array, inp: Uint8Array): { out: Uint8Array; code: number } {
-  const n = p.length;
-  const D = new Int32Array(256);
-  const C = new Int32Array(64);
-  const M = new Int32Array(256);
-  const buf = new Uint8Array(65536);
-  let sp = 0;
-  let csp = 0;
-  let olen = 0;
-  let inPos = 0;
-  let pc = 0;
-  let steps = 0;
-  const done = (code: number): { out: Uint8Array; code: number } => ({ out: buf.slice(0, olen), code });
+  const n = p.length, D = new Int32Array(256), C = new Int32Array(64), M = new Int32Array(256), buf = new Uint8Array(65536);
+  let sp = 0, csp = 0, ol = 0, ip = 0, pc = 0, st = 0;
+  const done = (code: number) => ({ out: buf.slice(0, ol), code });
   for (;;) {
-    if (steps === 1000000) return done(10);
+    if (st === 1000000) return done(10);
     if (pc < 0 || pc >= n) return done(9);
-    const op = p[pc];
-    const imm = IMM[op];
+    const op = p[pc], imm = IMM[op];
     if (imm < 0) return done(5);
     if (pc + imm >= n) return done(9);
-    steps++;
+    st++;
     if (sp < POPS[op]) return done(2);
     if (sp - POPS[op] + PUSHES[op] > 256) return done(3);
-    const next = pc + 1 + imm;
-    pc = next;
+    const nx = pc + 1 + imm;
+    pc = nx;
     switch (op) {
-      case 0:
-        return done(0);
-      case 1:
-        D[sp++] = (p[next - 1] << 24) >> 24;
-        break;
-      case 2:
-        D[sp++] = p[next - 4] | (p[next - 3] << 8) | (p[next - 2] << 16) | (p[next - 1] << 24);
-        break;
-      case 3:
-        sp--;
-        break;
-      case 4:
-        D[sp] = D[sp - 1];
-        sp++;
-        break;
-      case 5: {
-        const t = D[sp - 1];
-        D[sp - 1] = D[sp - 2];
-        D[sp - 2] = t;
-        break;
-      }
-      case 6:
-        D[sp] = D[sp - 2];
-        sp++;
-        break;
-      case 7: {
-        const a = D[sp - 3];
-        D[sp - 3] = D[sp - 2];
-        D[sp - 2] = D[sp - 1];
-        D[sp - 1] = a;
-        break;
-      }
-      case 23:
-        D[sp - 1] = -D[sp - 1];
-        break;
-      case 27:
-        D[sp - 1] = ~D[sp - 1];
-        break;
-      case 48:
-      case 49:
-      case 50: {
-        const rel = ((p[next - 2] | (p[next - 1] << 8)) << 16) >> 16;
+      case 0: return done(0);
+      case 1: D[sp++] = (p[nx - 1] << 24) >> 24; break;
+      case 2: D[sp++] = p[nx - 4] | (p[nx - 3] << 8) | (p[nx - 2] << 16) | (p[nx - 1] << 24); break;
+      case 3: sp--; break;
+      case 4: D[sp] = D[sp - 1]; sp++; break;
+      case 5: { const t = D[sp - 1]; D[sp - 1] = D[sp - 2]; D[sp - 2] = t; break; }
+      case 6: D[sp] = D[sp - 2]; sp++; break;
+      case 7: { const a = D[sp - 3]; D[sp - 3] = D[sp - 2]; D[sp - 2] = D[sp - 1]; D[sp - 1] = a; break; }
+      case 23: D[sp - 1] = -D[sp - 1]; break;
+      case 27: D[sp - 1] = ~D[sp - 1]; break;
+      case 48: case 49: case 50: {
+        const rel = ((p[nx - 2] | (p[nx - 1] << 8)) << 16) >> 16;
         let take = op === 48;
-        if (op !== 48) {
-          const v = D[--sp];
-          take = op === 49 ? v === 0 : v !== 0;
-        }
-        if (take) pc = next + rel;
+        if (op !== 48) { const v = D[--sp]; take = op === 49 ? v === 0 : v !== 0; }
+        if (take) pc = nx + rel;
         break;
       }
-      case 51:
-        if (csp === 64) return done(7);
-        C[csp++] = next;
-        pc = p[next - 2] | (p[next - 1] << 8);
-        break;
-      case 52:
-        if (csp === 0) return done(8);
-        pc = C[--csp];
-        break;
-      case 64: {
-        const a = D[sp - 1];
-        if (a < 0 || a > 255) return done(6);
-        D[sp - 1] = M[a];
-        break;
-      }
-      case 65: {
-        const a = D[sp - 1];
-        if (a < 0 || a > 255) return done(6);
-        M[a] = D[sp - 2];
-        sp -= 2;
-        break;
-      }
+      case 51: if (csp === 64) return done(7); C[csp++] = nx; pc = p[nx - 2] | (p[nx - 1] << 8); break;
+      case 52: if (csp === 0) return done(8); pc = C[--csp]; break;
+      case 64: { const a = D[sp - 1]; if (a < 0 || a > 255) return done(6); D[sp - 1] = M[a]; break; }
+      case 65: { const a = D[sp - 1]; if (a < 0 || a > 255) return done(6); M[a] = D[sp - 2]; sp -= 2; break; }
       case 80: {
         const s = String(D[sp - 1]);
-        if (olen + s.length > 65536) return done(11);
+        if (ol + s.length > 65536) return done(11);
         sp--;
-        for (let i = 0; i < s.length; i++) buf[olen++] = s.charCodeAt(i);
+        for (let i = 0; i < s.length; i++) buf[ol++] = s.charCodeAt(i);
         break;
       }
-      case 81:
-        if (olen + 1 > 65536) return done(11);
-        buf[olen++] = D[--sp] & 255;
-        break;
-      case 82:
-        D[sp++] = inPos < inp.length ? inp[inPos++] : -1;
-        break;
-      case 83:
-        return done(D[--sp] & 255);
+      case 81: if (ol + 1 > 65536) return done(11); buf[ol++] = D[--sp] & 255; break;
+      case 82: D[sp++] = ip < inp.length ? inp[ip++] : -1; break;
+      case 83: return done(D[--sp] & 255);
       default: {
-        const b = D[sp - 1];
-        const a = D[sp - 2];
+        const b = D[sp - 1], a = D[sp - 2];
         let r = 0;
         if (op === 16) r = a + b;
         else if (op === 17) r = a - b;
         else if (op === 18) r = Math.imul(a, b);
-        else if (op === 19) {
-          if (b === 0) return done(4);
-          r = a === -2147483648 && b === -1 ? a : (a / b) | 0;
-        } else if (op === 20) {
-          if (b === 0) return done(4);
-          r = b === -1 ? 0 : (a % b) | 0;
-        } else if (op === 21) {
-          if (b === 0) return done(4);
-          r = Math.floor((a >>> 0) / (b >>> 0)) | 0;
-        } else if (op === 22) {
-          if (b === 0) return done(4);
-          r = ((a >>> 0) % (b >>> 0)) | 0;
-        } else if (op === 24) r = a & b;
+        else if (op === 19) { if (b === 0) return done(4); r = a === -2147483648 && b === -1 ? a : (a / b) | 0; }
+        else if (op === 20) { if (b === 0) return done(4); r = b === -1 ? 0 : (a % b) | 0; }
+        else if (op === 21) { if (b === 0) return done(4); r = Math.floor((a >>> 0) / (b >>> 0)) | 0; }
+        else if (op === 22) { if (b === 0) return done(4); r = ((a >>> 0) % (b >>> 0)) | 0; }
+        else if (op === 24) r = a & b;
         else if (op === 25) r = a | b;
         else if (op === 26) r = a ^ b;
         else if (op === 28) r = a << (b & 31);
@@ -171,14 +86,9 @@ function run(p: Uint8Array, inp: Uint8Array): { out: Uint8Array; code: number } 
     }
   }
 }
-
-const I = process.env.MAKEFUN_INPUT_DIR ?? '/input';
-const O = process.env.MAKEFUN_OUTPUT_DIR ?? '/output';
+const I = process.env.MAKEFUN_INPUT_DIR ?? '/input', O = process.env.MAKEFUN_OUTPUT_DIR ?? '/output';
 for (const id of readdirSync(I).sort()) {
-  const r = run(
-    new Uint8Array(readFileSync(join(I, id, 'program.bin'))),
-    new Uint8Array(readFileSync(join(I, id, 'input.bin'))),
-  );
+  const r = run(new Uint8Array(readFileSync(join(I, id, 'program.bin'))), new Uint8Array(readFileSync(join(I, id, 'input.bin'))));
   mkdirSync(join(O, id), { recursive: true });
   writeFileSync(join(O, id, 'stdout.bin'), r.out);
   writeFileSync(join(O, id, 'exit.txt'), `${r.code}\n`);
